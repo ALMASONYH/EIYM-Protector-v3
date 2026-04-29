@@ -1,4 +1,4 @@
-# EIYM Protector v2
+# EIYM Protector v3
 
 **.NET Assembly Protector & Obfuscator**
 
