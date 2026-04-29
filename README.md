@@ -5,22 +5,43 @@
 Developed by **MasonGroup** (Freemasonry)
 **Team:** Battal Alqhtani & Turki Alotibi
 
-![Mason Protector](https://raw.githubusercontent.com/ALMASONYH/EIYM-Protector-v3/main/docs/image.png)
+![Mason Protector](docs/image.png)
 
 ---
 
 ## About
 
 EIYM Protector is an advanced .NET assembly protector built on top of **dnlib**.
-It applies **48+ independent protection layers** to .NET executables and libraries,
-making static analysis, dynamic analysis, dumping, tampering, and reverse engineering
-extremely difficult.
+v3 applies **48+ independent protection layers** to .NET executables and libraries
+on top of a fully reworked Renamer and Junk-Code engine, making static analysis,
+dynamic analysis, dumping, tampering, and reverse engineering extremely difficult.
 
 Select your `.exe` or `.dll`, choose the protections you want, and click **Protect**.
 You can also **drag and drop** a file directly onto the application.
 
 For the full technical reference (every flag, file map, what each layer does, and
 the order they run in), open **[`docs/MasonBook.pdf`](docs/MasonBook.pdf)**.
+
+---
+
+## What's New in v3
+
+v3 is the polish release that fixes long-standing weaknesses in the renamer and
+the junk-code engine, and that finally rewrites every decoy that previous versions
+left untouched.
+
+| Area | v2 behaviour | v3 behaviour |
+|---|---|---|
+| **Renamer — namespaces** | All types in one old namespace shared one new namespace | **Each top-level class lands in its own unique randomized namespace** — no two classes share one |
+| **Renamer — char set** | Sometimes leaked Cyrillic homoglyphs even when user picked Latin (`$MASON~еаouаcуіcһхһxx…`) | Names are produced **strictly from the user's `Chars` setting**. `forceLatin` honoured end-to-end |
+| **Renamer — decoy types** | Hardcoded decoy names (`AntiDumpAttribute`, `MemoryProtectionAttribute`, `SuppressIldasmAttribute`, `ConfusedByAttribute`, …) survived the rename | New **late injected pass** runs after every decoy injector and overwrites their type names, member names, and namespaces |
+| **Renamer — `System.*` namespaces** | `System.Runtime.CompilerServices`, `System.Security`, `System.Diagnostics.Guard` etc. were preserved and visible in the output | All injected `System.*` namespaces are now overwritten too |
+| **Junk Code — structure** | Flat orphan classes, no namespace, no nesting | **Multi-segment fake namespaces** (e.g. `aB.cD.eF`) shared across decoys to fake "subsystems"; **1–4 nested classes** per junk top-level, some doubly nested |
+| **Junk Code — registration** | Only top-levels tracked | Every nested type registered into `injectedTypes` so the renamer's late pass picks them up too |
+| **AntiILDasm marker** | `SuppressIldasmAttribute` was forced to stay in `System.Runtime.CompilerServices` to remain a marker | Marker removed; the four other AntiILDasm layers (confusing types, deep nests, malformed attrs, trap methods) still operate, and dropping the marker improves stealth (it no longer flags the binary as deliberately obfuscated) |
+
+Everything from v2 is still here — v3 is **strictly additive on protection
+strength** and **subtractive on giveaways**.
 
 ---
 
@@ -72,15 +93,15 @@ the order they run in), open **[`docs/MasonBook.pdf`](docs/MasonBook.pdf)**.
 | 33 | **Anti Memory Dump** | Additional in-process anti-dump traps |
 | 34 | **Anti Tamper** | Dual integrity check: file size + assembly bytes checksum |
 | 35 | **Anti De4dot** | Decoy types/interfaces/attributes that crash de4dot |
-| 36 | **Anti ILDasm** | Marks assembly so `ildasm` refuses to disassemble |
+| 36 | **Anti ILDasm** | 4-layer anti-disassembly: confusing structures, deep nests, malformed attributes, trap methods |
 | 37 | **Anti Hook** | Detects API hooks installed by analysis tools |
 | 38 | **Anti HTTP** | Blocks runtime HTTP traffic injected by sandboxes / monitors |
 
 ### Stealth & Metadata (10)
 | # | Layer | What it does |
 |---|---|---|
-| 39 | **Renamer** | Random names for namespaces / types / methods / fields / properties / events (off by default) |
-| 40 | **Junk Code** | Injects fake classes (3-10 fields, 5-15 methods, 2-5 props each). Configurable count (default 50, max 500) |
+| 39 | **Renamer** | Random names for namespaces / types / methods / fields / properties / events. Every class lands in its **own unique namespace**. Two-stage: main pass + late pass that rewrites injected decoys (`AntiDumpAttribute`, `SuppressIldasmAttribute`, …). Off by default |
+| 40 | **Junk Code** | Injects fake classes grouped under fake **multi-segment namespaces** (e.g. `aB.cD.eF`), each with 1-4 **nested classes** (some doubly nested). 2-8 fields + 1-5 methods per class. Configurable count (default 50, max 500) |
 | 41 | **Hide Methods** | Decompiler-confusing method attributes (`DebuggerHidden`, etc.) |
 | 42 | **Fake Attributes** | Misleading `CompilerGenerated` / `Obfuscation` attributes on types |
 | 43 | **Watermark** | Encrypted build stamp: UTC timestamp + build ID + signature + dummy noise |
@@ -153,13 +174,13 @@ and generic methods are skipped for CLR compatibility.
 
 ---
 
-## Renamer
+## Renamer (rewritten in v3)
 
 Disabled by default. When enabled, renames code elements to random strings.
 
 | Option | What it renames |
 |---|---|
-| Namespaces | All namespace names |
+| Namespaces | **Every top-level class gets its own unique random namespace** (no two classes share one) |
 | Types | Classes, structs, enums |
 | Methods | Methods (skips ctors, `Main`, virtual, `InitializeComponent`) |
 | Fields | Field names |
@@ -169,11 +190,49 @@ Disabled by default. When enabled, renames code elements to random strings.
 **Settings:**
 - **Length:** Random name length (5-50 chars)
 - **Prefix:** Prepended to each name (default: `$MASON~`)
-- **Chars:** Character set used for random names
+- **Chars:** Character set used for random names — names are produced strictly from this set (no Cyrillic homoglyph leakage)
+
+**Two-stage operation:**
+1. **Main pass** — renames user code (types / members / namespaces) and
+   compiler-generated helper types.
+2. **Late injected pass** — runs after every decoy injector (`AntiILDasm`,
+   `FakeAttributes`, `AntiMemoryDump`, `JunkCode`, …) so hardcoded decoy names
+   like `AntiDumpAttribute`, `SuppressIldasmAttribute`, `MemoryProtectionAttribute`
+   and their original `System.Runtime.CompilerServices` / `System.Security`
+   namespaces are overwritten.
 
 **Safety:** Auto-skips entry points, ctors, virtual / abstract methods,
 WinForms `InitializeComponent`, property accessors, event handlers, runtime
 special names, serializable fields, and resource-related types.
+
+**Tradeoff:** Renaming `SuppressIldasmAttribute` removes the ildasm attribute
+marker, but the four other anti-ildasm layers (`InjectConfusingTypeStructures`,
+`InjectDeepNestedTypes`, `InjectMalformedAttributes`, `InjectTrapMethods`) still
+operate, and dropping the marker improves stealth (it no longer flags the
+binary as deliberately obfuscated).
+
+---
+
+## Junk Code (rewritten in v3)
+
+Injects synthetic classes that look like real subsystems instead of orphan stubs.
+
+**Structure per build:**
+- Builds a pool of `max(2, count/3)` random multi-segment namespaces (e.g.
+  `aB.cD.eF`).
+- Each junk top-level class either picks one from the pool (≈66 % chance — so
+  several decoys cluster under a fake "subsystem") or gets a brand-new
+  namespace (≈33 % chance).
+- Each top-level junk class also carries **1–4 nested classes**, and each
+  nested class has a 33 % chance of containing a deeper nested class.
+- Every class (top-level + nested) gets 2–8 random-typed fields and 1–5
+  random-signature methods filled with arithmetic, XOR, NOT, and shift junk.
+- All nested types register into `engine.injectedTypes` so the renamer's late
+  pass picks them up too.
+
+**Result with renamer enabled:** ~`count` top-level classes spread across
+`count/3` fake namespaces, each containing nested classes — and every single
+type ends up in its own random namespace after the late pass.
 
 ---
 
@@ -187,26 +246,42 @@ special names, serializable fields, and resource-related types.
 
 ---
 
-## v2 vs v1 — What Changed
+## v1 vs v2 vs v3 — Full Comparison
 
-| Aspect | v1 | v2 |
-|---|---|---|
-| **Protections (toggles)** | 7 | **48 + Renamer** |
-| **Anti Debug** | Single `Debugger.IsAttached` check | 8-layer system + scattered second pass |
-| **Anti Tamper** | — | File size + checksum dual verification |
-| **Anti De4dot / ILDasm / Hook / HTTP / MemDump** | — | All available |
-| **Resources** | Plain XOR | Satellite + Deflate + 3-layer XOR + decoy resources |
-| **VM Obfuscation** | — | Two engines: int-stack v1 + object-stack v2 (handles `newobj` / boxing) |
-| **Runtime Encryption** | — | AES-256 + `DynamicMethod` rebuild |
-| **Method Body Encryption / Field Encryption / Array Encryption** | — | All available |
-| **Cross-Reference / Polymorphic / Delegate / Mutation Encryption** | — | All available |
-| **Calli / Local2Field / Proxy / Reference Proxy / Call Hiding / Method Scattering / Inliner** | — | All available |
-| **Control Flow Flattening v2 / Opaque Predicates / Branch Confusion / Stack Underflow** | — | All available |
-| **Code Virtualization** | — | Available |
-| **Stealth (Junk / Watermark / Hide / Fake / TokenConfusion / InvalidMetadata / TypeScrambler / DnSpyCrasher / EntryPointMover)** | Partial | Full |
-| **Renamer Safety** | Could break WinForms / resources | Smart skipping (WinForms, serializable, resources) |
-| **Stability** | P/Invoke crashes on some systems | All managed, no native P/Invoke crashes |
-| **Drag & Drop** | — | Available |
+| Aspect | v1 (EIYM) | v2 | v3 |
+|---|---|---|---|
+| **Protections (toggles)** | 7 | 21 | **48 + Renamer** |
+| **Anti Debug** | Single `Debugger.IsAttached` | 8-layer system | 8-layer + scattered second pass |
+| **Anti VM** | WMI checks | WMI checks | WMI checks |
+| **Anti Tamper** | — | File size + checksum | File size + checksum |
+| **Anti De4dot** | — | Decoy crash types | Decoy crash types (renamed in late pass) |
+| **Anti ILDasm** | — | `SuppressIldasm` marker only | **4 layers**: confusing types, deep nests, malformed attrs, trap methods (marker dropped, stealthier) |
+| **Anti Hook / HTTP / MemDump** | — | — | All available |
+| **Resources** | Plain XOR (manual decrypt) | Satellite + Deflate + 3-layer XOR + decoy resources | Same as v2 |
+| **String Encryption** | XOR per string | XOR per string | XOR per string |
+| **Int Encoding** | XOR / ADD / SUB / double-XOR | XOR / ADD / SUB / double-XOR | XOR / ADD / SUB / double-XOR |
+| **Mutation Encoding** | — | Available | Available |
+| **Constants / Composition / Field / Array Encryption** | — | — | All available |
+| **Cross-Reference / Polymorphic / Delegate Encryption** | — | — | All available |
+| **Method Body Encryption** | — | — | Available |
+| **Runtime Encryption (RE)** | — | AES-256 + DynamicMethod | AES-256 + DynamicMethod |
+| **Control Flow** | Fake branches at entry | Fake branches at entry | + CFF v2, opaque predicates, branch confusion, stack underflow |
+| **VM Obfuscation** | — | One engine | **Two engines**: int-stack v1 + object-stack v2 (`newobj`/boxing) |
+| **Code Virtualization** | — | — | Available |
+| **Calli / Local2Field** | — | Available | Available |
+| **Proxy Calls / Reference Proxy / Call Hiding** | — | Proxy Calls only | All three |
+| **Method Scattering / Inliner** | — | — | Both available |
+| **Junk Code** | Flat classes, no ns, no nesting | Flat classes, no ns | **Multi-segment namespaces + nested + doubly-nested classes** |
+| **Renamer — namespaces** | All renamed (single map) | All renamed (single map) | **Per-class unique namespace** |
+| **Renamer — char set** | Latin only | Latin (with leakage) | **Strict user `Chars`, no homoglyph leakage** |
+| **Renamer — decoy types** | N/A | Decoys not renamed (`AntiDumpAttribute` survived) | **Late pass renames every decoy + its members + namespace** |
+| **Renamer — System.* namespaces** | N/A | `System.Runtime.CompilerServices` etc. preserved | **Overwritten** |
+| **Renamer Safety** | Could break WinForms / resources | Smart skipping | Smart skipping + late-pass exclusions |
+| **Hide Methods / Fake Attributes / Watermark** | — | All available | All available (watermarks renamed in late pass) |
+| **Token Confusion / Invalid Metadata / Type Scrambler / DnSpy Crasher** | — | Metadata Confusion only | All available |
+| **Entry Point Mover** | — | — | Available |
+| **Drag & Drop** | — | Available | Available |
+| **Stability** | P/Invoke crashes on some systems | All managed | All managed |
 
 ---
 
@@ -250,7 +325,8 @@ MasonProtector/
 │       ├── Obfuscation/  (15 modules)  ControlFlow, CFF2, OpaquePredicate, BranchConfusion, VMObf, CodeVirt, Calli, Local2Field, MethodScattering, MethodInliner, ProxyCalls, ReferenceProxy, CallHiding, StackUnderflow, NumericObf
 │       └── Stealth/      (11 modules)  Renamer, JunkCode, Watermark, HideMethods, FakeAttributes, TokenConfusion, InvalidMetadata, TypeScrambler, MetadataConfusion, EntryPointMover, DnSpyCrasher
 docs/
-└── MasonBook.pdf                                     # Full technical reference
+├── MasonBook.pdf                                     # Full technical reference
+└── image.png                                         # UI screenshot (used by README)
 packages/
 └── dnlib.4.5.0/                                      # NuGet dependency (net45)
 ```
